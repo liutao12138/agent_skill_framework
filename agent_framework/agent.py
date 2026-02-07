@@ -70,48 +70,75 @@ class Agent:
     def _run_agent_loop(self, messages: List[Dict], tools: List[Dict], stream: bool = False) -> Dict[str, Any]:
         result = {"success": False, "content": "", "tool_calls": [], "duration": 0}
         start_time, iterations = time.time(), 0
-        try:
-            while iterations < self.config.agent.max_iterations:
-                iterations += 1
-                response = self.model_client.chat(messages=messages, tools=tools if tools else None, stream=stream)
-                if stream:
-                    result["content"] = "".join(chunk for chunk in response)
-                    result["success"] = True
-                    break
-                messages.append({"role": "assistant", "content": response.content})
-                result["content"] = response.content
-                if response.stop_reason.value == "stop":
-                    result["success"] = True
-                    break
-                if response.tool_calls:
-                    tool_results = self._execute_tools(response.tool_calls)
-                    result["tool_calls"].extend(r["tool_name"] for r in tool_results)
-                    messages.append({"role": "assistant", "content": response.content})
-                    messages.append({"role": "user", "content": [{"type": "tool_result", "content": tool_results}]})
+
+        while iterations < self.config.agent.max_iterations:
+            iterations += 1
+            response = self.model_client.chat(messages=messages, tools=tools if tools else None, stream=stream)
+
+            # 收集响应内容
+            if stream:
+                for _ in response:
+                    pass
+            content = response.content
+            tool_calls = response.tool_calls or []
+
+            messages.append({"role": "assistant", "content": content})
+            result["content"] = content
+
+            # 处理工具调用
+            if tool_calls:
+                tool_results = self._execute_tools(tool_calls)
+                result["tool_calls"].extend(r["tool_name"] for r in tool_results)
+                messages.extend([{"role": "tool", "content": r["output"], "tool_call_id": r["tool_use_id"]} for r in tool_results])
                 if time.time() - start_time > self.config.agent.max_iterations * 10:
                     break
-            result["duration"] = time.time() - start_time
-            result["iterations"] = iterations
-        except Exception as e:
-            result["error"] = str(e)
-            self.events.emit(EventType.ERROR, {"error": str(e)})
+                continue
+
+            # 无工具调用，检查是否停止
+            if not stream and response.stop_reason.value == "stop":
+                result["success"] = True
+                break
+
+            if stream or response.stop_reason.value == "stop":
+                result["success"] = True
+                break
+
+            if time.time() - start_time > self.config.agent.max_iterations * 10:
+                break
+
+        result["duration"] = time.time() - start_time
+        result["iterations"] = iterations
         return result
 
     def _execute_tools(self, tool_calls: List) -> List[Dict[str, Any]]:
+        """执行工具调用，统一处理 ToolCall 对象和字典格式"""
         results = []
-        for tool_call in tool_calls:
-            tool_name, args_str = tool_call.function.name, tool_call.function.arguments
+        for tc in tool_calls:
+            # 统一获取函数名和参数
+            if hasattr(tc, 'function'):  # ToolCall 对象
+                func = tc.function
+                tool_name = func.get("name", "") if isinstance(func, dict) else func.name
+                args_str = func.get("arguments", "") if isinstance(func, dict) else func.arguments
+                tool_id = tc.id
+            else:  # 字典格式
+                func = tc.get("function", {})
+                tool_name = func.get("name", "")
+                args_str = func.get("arguments", "")
+                tool_id = tc.get("id", "")
+
             args = json.loads(args_str) if args_str else {}
             self.events.emit(EventType.TOOL_CALL_START, {"tool_name": tool_name, "input": args})
+
             start_time = time.time()
             try:
                 output = execute_tool(tool_name, **args)
                 success = not output.startswith("Error:")
             except Exception as e:
                 output, success = f"Error: {e}", False
+
             duration = time.time() - start_time
             self.events.emit(EventType.TOOL_RESULT, {"tool_name": tool_name, "output": output, "success": success, "duration": duration})
-            results.append({"tool_use_id": tool_call.id, "tool_name": tool_name, "output": output, "success": success, "duration": duration})
+            results.append({"tool_use_id": tool_id, "tool_name": tool_name, "output": output, "success": success, "duration": duration})
         return results
 
     def run_skill(self, skill_name: str) -> str:

@@ -8,6 +8,10 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Any, Dict, Generator, List, Optional, Union
 
+from agent_framework.logger import get_logger
+
+
+logger = get_logger()
 
 class StopReason(Enum):
     """停止原因"""
@@ -86,6 +90,48 @@ class StreamCallback:
                 pass
 
 
+class StreamResponse:
+    """流式响应包装器"""
+    def __init__(self):
+        self._content = ""
+        self._tool_calls = []
+        self._generator = None
+
+    def __iter__(self):
+        return iter(self._generator)
+
+    @property
+    def content(self):
+        return self._content
+
+    @property
+    def tool_calls(self):
+        return self._tool_calls
+
+    def add_tool_calls(self, tool_calls):
+        self._tool_calls.extend(tool_calls)
+
+    def _build_generator(self, response, callback, parse_chunk_func):
+        for line in response.iter_lines():
+            chunk = parse_chunk_func(line)
+            if chunk:
+                choice = chunk.get("choices", [{}])[0]
+                delta = choice.get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    self._content += content
+                    if callback:
+                        callback._trigger("on_content", content)
+                    yield content
+                tool_calls_data = delta.get("tool_calls")
+                if tool_calls_data:
+                    self.add_tool_calls(tool_calls_data)
+                    if callback:
+                        callback._trigger("on_tool_call", tool_calls_data)
+        if callback:
+            callback._trigger("on_stop")
+
+
 class BaseModelClient:
     """模型客户端基类"""
 
@@ -121,6 +167,8 @@ class BaseModelClient:
             except Exception as e:
                 if attempt < self.retry_times - 1:
                     time.sleep(self.retry_delay * (attempt + 1))
+                else:
+                    logger.error(f"Request failed after {self.retry_times} attempts: {e}")
         raise Exception(f"Request failed after {self.retry_times} attempts")
 
     def _parse_response(self, response: Dict) -> ModelResponse:
@@ -148,9 +196,12 @@ class BaseModelClient:
     def _parse_chunk(self, chunk: bytes) -> Optional[Dict[str, Any]]:
         try:
             line = chunk.decode("utf-8").strip()
-            if not line or line == "[DONE]":
+            if not line:
                 return None
             line = line[6:] if line.startswith("data: ") else line
+            
+            if not line or line == "[DONE]":
+                return None
             return json.loads(line)
         except:
             return None
@@ -162,25 +213,9 @@ class BaseModelClient:
         if not stream:
             return self._parse_response(response.json())
 
-        def generate():
-            if callback:
-                callback._trigger("on_start")
-            for line in response.iter_lines():
-                chunk = self._parse_chunk(line)
-                if chunk:
-                    choice = chunk.get("choices", [{}])[0]
-                    delta = choice.get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        if callback:
-                            callback._trigger("on_content", content)
-                        yield content
-                    if delta.get("tool_calls"):
-                        if callback:
-                            callback._trigger("on_tool_call", delta["tool_calls"])
-            if callback:
-                callback._trigger("on_stop")
-        return generate()
+        stream_response = StreamResponse()
+        stream_response._generator = stream_response._build_generator(response, callback, self._parse_chunk)
+        return stream_response
 
     def get_model_info(self) -> Dict[str, Any]:
         return {"model": self.model, "base_url": self.base_url}

@@ -91,7 +91,13 @@ class SubAgent:
                     elif response.stop_reason == StopReason.TOOL_USE:
                         tool_results = self._execute_tools(response.tool_calls)
                         self.messages.append({"role": "assistant", "content": response.content})
-                        self.messages.append({"role": "user", "content": [{"type": "tool_result", "content": tool_results}]})
+                        # 按 OpenAI 格式添加工具结果
+                        for r in tool_results:
+                            self.messages.append({
+                                "role": "tool",
+                                "content": r["output"],
+                                "tool_call_id": r["tool_use_id"]
+                            })
 
                 if time.time() - start_time > self.config.timeout:
                     result["error"] = "Timeout"
@@ -136,11 +142,14 @@ class SubAgent:
     def _execute_tools(self, tool_calls: List) -> List[Dict[str, Any]]:
         results = []
         for tool_call in tool_calls:
-            tool_name = tool_call.function.name
+            # ToolCall.function 是字典 Dict[str, str]
+            func = tool_call.function if hasattr(tool_call, 'function') else tool_call
+            tool_name = func.get("name", "")
+            args_str = func.get("arguments", "")
             try:
-                args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                args = json.loads(args_str) if args_str else {}
             except:
-                args = {"raw": str(tool_call.function.arguments)}
+                args = {"raw": str(args_str)}
 
             start_time = time.time()
             self.events.emit_tool_call(tool_name, args)
@@ -154,7 +163,8 @@ class SubAgent:
             duration = time.time() - start_time
             self.stats["tool_calls"] += 1
             self.events.emit_tool_result(tool_name, output, success, duration)
-            results.append({"tool_use_id": tool_call.id, "tool_name": tool_name, "output": output, "success": success})
+            tool_id = tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id", "")
+            results.append({"tool_use_id": tool_id, "tool_name": tool_name, "output": output, "success": success})
 
         return results
 

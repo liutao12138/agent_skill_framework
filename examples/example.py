@@ -15,7 +15,7 @@ def main():
     agent = create_agent()
 
     # 发送消息
-    response = agent.chat("你好，请简单介绍一下你自己？")
+    response = agent.chat("请写一个react的应用初始化勾子函数代码", stream=False)
     content = response.get('content', '')
     print(f"\nReply: {content}")
 
