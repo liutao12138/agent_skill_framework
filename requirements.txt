@@ -1,16 +1,5 @@
 # Agent Framework Dependencies
-# 生产级 AI Agent 框架
 
-# 核心依赖
-requests>=2.25.0
 PyYAML>=5.4.0
-
-# 可选依赖
-# dataclasses 已经包含在 Python 3.7+
-
-# 开发依赖
+httpx>=0.25.0
 pytest>=7.0.0
-pytest-asyncio>=0.18.0
-black>=22.0.0
-flake8>=4.0.0
-mypy>=0.950

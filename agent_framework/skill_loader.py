@@ -174,15 +174,19 @@ class SkillLoader:
 _skills_loader: Optional[SkillLoader] = None
 
 
-def get_skills_loader() -> SkillLoader:
+def get_skills_loader(skills_dir: str = None) -> SkillLoader:
     global _skills_loader
+    if skills_dir is not None:
+        return SkillLoader(skills_dir)
     if _skills_loader is None:
         from .config import get_config
         _skills_loader = SkillLoader(get_config().skills_dir)
     return _skills_loader
 
 
-def scan_skills() -> List[str]:
+def scan_skills(skills_dir: str = None) -> List[str]:
+    if skills_dir is not None:
+        return SkillLoader(skills_dir).scan()
     return get_skills_loader().scan()
 
 

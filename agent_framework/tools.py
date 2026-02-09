@@ -4,12 +4,15 @@
 import os
 import re
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+from .logger import get_logger
 
 
 class ToolCategory(Enum):
@@ -305,15 +308,21 @@ class ToolRegistry:
     def execute(self, name: str, **kwargs) -> str:
         tool = self.get(name)
         if tool is None:
+            get_logger().error(f"[TOOL] Unknown tool: {name}")
             return f"Error: Unknown tool: {name}"
         definition = tool.get_definition()
         timeout = kwargs.pop("timeout", definition.timeout)
+        get_logger().info(f"[TOOL] Executing: {name}, args={list(kwargs.keys())}")
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                return executor.submit(tool.execute, **kwargs).result(timeout=timeout)
+                result = executor.submit(tool.execute, **kwargs).result(timeout=timeout)
+            get_logger().debug(f"[TOOL] Result: {result[:200]}..." if len(result) > 200 else f"[TOOL] Result: {result}")
+            return result
         except TimeoutError:
+            get_logger().error(f"[TOOL] Timeout: {name} exceeded {timeout}s")
             return f"Error: Tool timed out after {timeout}s"
         except Exception as e:
+            get_logger().error(f"[TOOL] Error: {name} failed: {e}\n{traceback.format_exc()}")
             return f"Error: Tool execution failed: {e}"
 
     def list_tools(self) -> List[Dict[str, Any]]:
@@ -332,8 +341,21 @@ def get_tool_registry() -> ToolRegistry:
 
 
 def execute_tool(name: str, **kwargs) -> str:
+    get_logger().info(f"[TOOL] Direct call: {name}, kwargs={kwargs}")
     return get_tool_registry().execute(name, **kwargs)
 
 
-def get_tool_definitions() -> List[Dict[str, Any]]:
-    return get_tool_registry().get_definitions_as_dicts()
+def get_tool_definitions(allowed_tools: List[str] = None) -> List[Dict[str, Any]]:
+    """获取工具定义列表
+
+    Args:
+        allowed_tools: 可用工具名称列表，如果为 None 则返回所有工具
+    """
+    registry = get_tool_registry()
+    all_tools = registry.get_definitions_as_dicts()
+
+    if allowed_tools is None:
+        return all_tools
+
+    # 过滤工具
+    return [tool for tool in all_tools if tool.get("function", {}).get("name") in allowed_tools]

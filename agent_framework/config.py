@@ -21,6 +21,9 @@ class ModelConfig:
     timeout: int = 60
     retry_times: int = 3
     retry_delay: float = 1.0
+    # 会话管理
+    max_messages: int = 50  # 最大消息数量，超过则滑动窗口
+    rate_limit_delay: float = 0.5  # 请求间最小延迟(秒)
 
 
 @dataclass

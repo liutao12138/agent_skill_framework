@@ -18,6 +18,7 @@ class EventType(Enum):
     MODEL_START = "model_start"
     MODEL_STOP = "model_stop"
     MODEL_ERROR = "model_error"
+    MODEL_STREAM = "model_stream"  # 流式输出 token
     THINKING_START = "thinking_start"
     THINKING_CONTENT = "thinking_content"
     THINKING_STOP = "thinking_stop"
@@ -48,7 +49,6 @@ class Event:
     data: Dict[str, Any] = field(default_factory=dict)
     source: str = ""
     session_id: Optional[str] = None
-    message_id: Optional[str] = None
 
 
 class ConsoleEventHandler:
@@ -57,21 +57,35 @@ class ConsoleEventHandler:
     def __init__(self, show_timestamps: bool = True):
         self.show_timestamps = show_timestamps
 
+    def _format_session(self, session_id: str = None) -> str:
+        """格式化 session_id"""
+        if session_id:
+            return f"[{session_id}]"
+        return ""
+
     def handle(self, event: Event):
         ts = f"[{datetime.fromtimestamp(event.timestamp).strftime('%H:%M:%S')}]" if self.show_timestamps else ""
         data = event.data
+        session_prefix = self._format_session(event.session_id)
 
         handlers = {
-            EventType.THINKING_CONTENT: lambda: print(f"{ts} {data.get('content', '')}", end="", flush=True),
-            EventType.TOOL_CALL_START: lambda: print(f"{ts} 🔧 调用工具: {data.get('tool_name')}\n{ts}   参数: {json.dumps(data.get('input', {}), indent=2)}"),
-            EventType.TOOL_CALL_STOP: lambda: print(f"{ts} ✅ 工具完成: {data.get('tool_name')} ({data.get('duration', 0):.2f}s)"),
-            EventType.TOOL_RESULT: lambda: print(f"{ts} 📋 工具结果: {data.get('tool_name')}"),
-            EventType.SUBAGENT_START: lambda: print(f"{ts} 🤖 启动子Agent: {data.get('name')}"),
-            EventType.SUBAGENT_STOP: lambda: print(f"{ts} ✅ 子Agent完成: {data.get('name')} ({data.get('duration', 0):.2f}s)"),
-            EventType.SKILL_LOADED: lambda: print(f"{ts} 📚 加载技能: {data.get('skill_name')}"),
-            EventType.ERROR: lambda: print(f"{ts} ❌ 错误: {data.get('error')}"),
-            EventType.WARNING: lambda: print(f"{ts} ⚠️  警告: {data.get('warning')}"),
-            EventType.PROGRESS: lambda: print(f"{ts} 📊 进度: {data.get('current', 0)}/{data.get('total', 0)} - {data.get('message', '')}"),
+            EventType.MODEL_START: lambda: print(f"{ts} {session_prefix} [MODEL] Start: {data.get('iteration', data.get('agent', 'unknown'))}"),
+            EventType.MODEL_STOP: lambda: print(f"{ts} {session_prefix} [MODEL] Stop: {data.get('iteration', data.get('agent', 'unknown'))}"),
+            EventType.MODEL_ERROR: lambda: print(f"{ts} {session_prefix} [MODEL] Error: {data.get('error')}"),
+            EventType.MODEL_STREAM: lambda: print(f"{data.get('chunk', '')}", end="", flush=True),
+            EventType.THINKING_CONTENT: lambda: print(f"{ts} {session_prefix} {data.get('content', '')}", end="", flush=True),
+            EventType.TOOL_CALL_START: lambda: print(f"{ts} {session_prefix} [TOOL] Call: {data.get('tool_name')}\n{ts}   Args: {json.dumps(data.get('input', {}), indent=2)}"),
+            EventType.TOOL_CALL_STOP: lambda: print(f"{ts} {session_prefix} [TOOL] Done: {data.get('tool_name')} ({data.get('duration', 0):.2f}s)"),
+            EventType.TOOL_RESULT: lambda: print(f"{ts} {session_prefix} [TOOL] Result: {data.get('tool_name')}"),
+            EventType.SUBAGENT_START: lambda: print(f"{ts} {session_prefix} [SUBAGENT] Start: {data.get('name')} - {data.get('task', '')[:50]}"),
+            EventType.SUBAGENT_STOP: lambda: print(f"{ts} {session_prefix} [SUBAGENT] Done: {data.get('name')} ({data.get('duration', 0):.2f}s)"),
+            EventType.SUBAGENT_ERROR: lambda: print(f"{ts} {session_prefix} [SUBAGENT] Error: {data.get('error')}"),
+            EventType.SKILL_LOAD: lambda: print(f"{ts} {session_prefix} [SKILL] Load: {data.get('skill_name')}"),
+            EventType.SKILL_LOADED: lambda: print(f"{ts} {session_prefix} [SKILL] Loaded: {data.get('skill_name')}"),
+            EventType.USER_MESSAGE: lambda: print(f"{ts} {session_prefix} [USER] {data.get('message', '')[:100]}"),
+            EventType.ERROR: lambda: print(f"{ts} {session_prefix} [ERROR] {data.get('error')}"),
+            EventType.WARNING: lambda: print(f"{ts} {session_prefix} [WARN] {data.get('warning')}"),
+            EventType.PROGRESS: lambda: print(f"{ts} {session_prefix} [PROGRESS] {data.get('current', 0)}/{data.get('total', 0)} - {data.get('message', '')}"),
         }
 
         handler = handlers.get(event.type)
@@ -127,6 +141,10 @@ class EventEmitter:
             self._callbacks.append((callback, event_types or []))
 
     # 便捷方法
+    def emit_model_stream(self, chunk: str, incremental: bool = True):
+        """发射流式 token 事件"""
+        self.emit(EventType.MODEL_STREAM, {"chunk": chunk, "incremental": incremental})
+
     def emit_thinking(self, content: str, incremental: bool = False):
         self.emit(EventType.THINKING_CONTENT, {"content": content, "incremental": incremental})
 
@@ -138,6 +156,9 @@ class EventEmitter:
 
     def emit_subagent_start(self, name: str, task: str):
         self.emit(EventType.SUBAGENT_START, {"name": name, "task": task})
+
+    def emit_subagent_stop(self, name: str, duration: float = 0):
+        self.emit(EventType.SUBAGENT_STOP, {"name": name, "duration": duration})
 
     def emit_skill_loaded(self, skill_name: str):
         self.emit(EventType.SKILL_LOADED, {"skill_name": skill_name})
@@ -152,9 +173,7 @@ _event_emitter: Optional[EventEmitter] = None
 def get_event_emitter() -> EventEmitter:
     global _event_emitter
     if _event_emitter is None:
-        from .config import get_config
-        config = get_config()
-        _event_emitter = EventEmitter(config.event_queue_size if hasattr(config, 'event_queue_size') else 1000)
+        _event_emitter = EventEmitter(1000)
         _event_emitter.add_handler(ConsoleEventHandler())
     return _event_emitter
 
