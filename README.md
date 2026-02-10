@@ -236,38 +236,6 @@ result = agent.run_subagent(
 | code | 代码实现 | 所有工具 |
 | plan | 任务规划 | read_file, bash, grep |
 
-## 会话管理
-
-### 创建会话
-
-```python
-agent = Agent()
-
-# 创建新会话
-session = agent.create_session(
-    system_prompt="You are a Python expert."
-)
-session_id = session.session_id
-```
-
-### 发送消息
-
-```python
-# 使用会话ID
-result = agent.chat(
-    message="How to create a class?",
-    session_id=session_id
-)
-```
-
-### 获取会话历史
-
-```python
-history = agent.get_session_history()
-for msg in history:
-    print(f"{msg['role']}: {msg['content'][:100]}...")
-```
-
 ## 事件系统
 
 ### 事件类型
@@ -340,9 +308,7 @@ agent_framework/
 ├── session.py            # 会话管理
 ├── events.py             # 事件系统
 ├── examples/             # 示例
-│   ├── basic_usage.py
-│   ├── advanced_usage.py
-│   └── mindie_example.py
+│   └── example.py
 ├── skills/               # Skills
 │   ├── pdf/
 │   ├── mcp-builder/

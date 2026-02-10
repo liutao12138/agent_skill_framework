@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_framework import create_agent, setup_logging
 from agent_framework.events import EventType, ConsoleEventHandler, Event
 
-setup_logging("INFO")
+setup_logging("DEBUG")
 
 
 class StreamingTokenPrinter:

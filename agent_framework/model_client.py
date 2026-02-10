@@ -64,6 +64,7 @@ class AsyncStreamResponse:
         self._on_complete = on_complete
         self._content = ""
         self._tool_calls = []
+        self._completed = False
 
     def __aiter__(self):
         return self
@@ -74,8 +75,10 @@ class AsyncStreamResponse:
             self._content += chunk
             return chunk
         except StopAsyncIteration:
+            self._completed = True
             if self._on_complete:
-                self._on_complete()
+                # 重要：on_complete 返回 tool_calls，需要保存
+                self._tool_calls = self._on_complete()
             raise
 
     @property
@@ -89,6 +92,10 @@ class AsyncStreamResponse:
     @tool_calls.setter
     def tool_calls(self, value):
         self._tool_calls = value
+
+    def get_completed_tool_calls(self):
+        """获取完整的 tool_calls（流结束后调用）"""
+        return self._tool_calls
 
 
 class BaseModelClient:
@@ -173,57 +180,105 @@ class BaseModelClient:
         self._log_request(body)
         url = f"{self.base_url}/chat/completions"
         content_parts = []
-        tool_calls = []
+        tool_calls_map: Dict[int, Dict] = {}
 
         async def collect_stream():
-            nonlocal content_parts, tool_calls
+            nonlocal tool_calls_map
             for attempt in range(self.retry_times):
                 try:
-                    client = await self._get_client()
-                    async with client.stream("POST", url, headers=self.headers, json=body) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            data = self._parse_chunk(line.encode() if isinstance(line, str) else line)
-                            if data:
-                                choice = data.get("choices", [{}])[0]
-                                delta = choice.get("delta", {})
-                                content_delta = delta.get("content", "")
-                                if content_delta:
-                                    content_parts.append(content_delta)
-                                    yield content_delta
-                                # 收集tool_calls
-                                tc = delta.get("tool_calls")
-                                if tc:
-                                    tool_calls.extend(tc)
-                    break
+                    async for raw_line in self._stream_lines(url, body):
+                        chunk = self._process_chunk(raw_line, content_parts, tool_calls_map)
+                        if chunk:
+                            yield chunk
+                    return
                 except Exception as e:
-                    import traceback
-                    error_details = f"{type(e).__name__}: {e}"
-                    
-                    # 429错误：使用指数退避
-                    is_429 = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
-                    if is_429:
-                        wait_time = self.retry_delay * (2 ** attempt)
-                        logger.warning(f"[MODEL] Stream rate limited (429), waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        logger.warning(f"[MODEL] Stream request attempt {attempt + 1} failed: {error_details}")
-                        if attempt < self.retry_times - 1:
-                            time.sleep(self.retry_delay * (attempt + 1))
-                        else:
-                            logger.error(f"[MODEL] Stream request failed: {error_details}")
-                            logger.error(f"[MODEL] Full traceback:\n{traceback.format_exc()}")
-                            raise Exception(f"Stream request failed after {self.retry_times} attempts")
+                    self._handle_stream_error(e, attempt)
 
         def on_complete():
-            full_content = "".join(content_parts)
-            logger.debug(f"[MODEL] Stream response content:\n{full_content}")
-            if tool_calls:
-                logger.debug(f"[MODEL] Stream response tool_calls:\n{json.dumps(tool_calls, ensure_ascii=False, indent=2)}")
+            return self._finalize_stream_response(content_parts, tool_calls_map)
 
-        response = AsyncStreamResponse(collect_stream(), on_complete)
-        response._tool_calls = tool_calls  # 设置收集到的tool_calls
-        return response
+        return AsyncStreamResponse(collect_stream(), on_complete)
+
+    async def _stream_lines(self, url: str, body: Dict):
+        """获取流式响应行"""
+        client = await self._get_client()
+        async with client.stream("POST", url, headers=self.headers, json=body) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                yield line
+
+    def _process_chunk(self, line: str, content_parts: List[str],
+                       tool_calls_map: Dict[int, Dict]) -> Optional[str]:
+        """处理单个数据块，返回内容"""
+        data = self._parse_chunk(line.encode() if isinstance(line, str) else line)
+        if not data:
+            return None
+
+        choice = data.get("choices", [{}])[0]
+        delta = choice.get("delta", {})
+        content_delta = delta.get("content", "")
+
+        if content_delta:
+            content_parts.append(content_delta)
+            return content_delta
+
+        tc_list = delta.get("tool_calls")
+        if tc_list:
+            self._merge_tool_calls(tc_list, tool_calls_map)
+
+        return None
+
+    def _merge_tool_calls(self, tc_list: List[Dict], tool_calls_map: Dict[int, Dict]):
+        """合并流式 tool_calls"""
+        for tc in tc_list:
+            index = tc.get("index", 0)
+            if index not in tool_calls_map:
+                tool_calls_map[index] = {"id": "", "type": "", "function": {"name": "", "arguments": ""}}
+
+            tc_map = tool_calls_map[index]
+            if tc.get("id"):
+                tc_map["id"] = tc["id"]
+            if tc.get("type"):
+                tc_map["type"] = tc["type"]
+
+            func = tc.get("function", {})
+            if func.get("name"):
+                tc_map["function"]["name"] = func["name"]
+            if func.get("arguments"):
+                tc_map["function"]["arguments"] += func["arguments"]
+
+    def _handle_stream_error(self, error: Exception, attempt: int):
+        """处理流式错误"""
+        import traceback
+        error_details = f"{type(error).__name__}: {error}"
+        is_429 = isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429
+
+        if is_429:
+            wait_time = self.retry_delay * (2 ** attempt)
+            logger.warning(f"[MODEL] Stream rate limited (429), waiting {wait_time}s...")
+            time.sleep(wait_time)
+        elif attempt < self.retry_times - 1:
+            logger.warning(f"[MODEL] Stream request attempt {attempt + 1} failed: {error_details}")
+            time.sleep(self.retry_delay * (attempt + 1))
+        else:
+            logger.error(f"[MODEL] Stream request failed: {error_details}")
+            logger.error(f"[MODEL] Full traceback:\n{traceback.format_exc()}")
+            raise Exception(f"Stream request failed after {self.retry_times} attempts")
+
+    def _finalize_stream_response(self, content_parts: List[str], tool_calls_map: Dict[int, Dict]) -> List[ToolCall]:
+        """完成流式响应"""
+        full_content = "".join(content_parts)
+        logger.debug(f"[MODEL] Stream response content:\n{full_content}")
+
+        tool_calls_list = [
+            ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
+            for tc in tool_calls_map.values() if tc["id"]
+        ]
+
+        if tool_calls_list:
+            logger.debug(f"[MODEL] Stream response tool_calls:\n{json.dumps([tc.__dict__ for tc in tool_calls_list], ensure_ascii=False, indent=2)}")
+
+        return tool_calls_list
 
     def _parse_response(self, response: Dict) -> ModelResponse:
         choice = response.get("choices", [{}])[0]

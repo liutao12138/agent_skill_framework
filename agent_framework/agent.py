@@ -48,11 +48,14 @@ class Agent:
 
     def _init_skills(self):
         try:
-            skills = scan_skills(_resolve_path(self.config.skills_dir))
+            # 使用 self.skills_loader 进行扫描，结果会保存在 loader 中
+            skills = self.skills_loader.scan()
             if skills:
                 self.logger.info(f"[SKILLS] Loaded {len(skills)} skills: {', '.join(skills)}")
                 for skill in skills:
                     self.events.emit(EventType.SKILL_LOADED, {"skill_name": skill})
+            else:
+                self.logger.debug(f"[SKILLS] No skills found in {self.skills_loader.skills_dir}")
         except Exception as e:
             self.logger.warning(f"[SKILLS] Failed to load skills: {e}")
 
@@ -62,7 +65,20 @@ class Agent:
         skills_desc = self.skills_loader.get_descriptions()
         if skills_desc:
             parts.append(f"\n**Skills:**\n{skills_desc}")
-        parts.extend(["\nRules:", "- Use tools/subagents immediately when task matches", "- Prefer tools over prose"])
+        parts.extend([
+            "\n**Core Capabilities:**",
+            "- **Search & Research**: Use search tools (grep, list_dir) to find information before answering",
+            "- **Summarize & Synthesize**: Combine multiple search results into a comprehensive answer",
+            "- **File Operations**: Read, write, and edit files as needed to complete tasks",
+            "- **Shell Commands**: Execute bash commands for system operations when required",
+            "",
+            "**Response Guidelines:**",
+            "- Always search for relevant information first before providing answers",
+            "- When multiple sources are available, synthesize them into a coherent response",
+            "- If search yields no results, clearly state what was searched and what couldn't be found",
+            "- Use tools immediately when a task matches - don't just describe what you would do",
+            "- Prefer concrete actions and results over lengthy explanations"
+        ])
         return "\n".join(parts)
 
     def _prune_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -148,9 +164,8 @@ class Agent:
 
             # 滑动窗口：裁剪消息历史
             messages = self._prune_messages(messages)
-            
+
             response = await self.model_client.chat(messages=messages, tools=tools if tools else None, stream=stream)
-            self.events.emit(EventType.MODEL_STOP, {"iteration": iterations, "session_id": session_id})
 
             # 收集响应内容
             if stream:
@@ -159,12 +174,30 @@ class Agent:
                     content += chunk
                     # 发射流式 token 事件
                     self.events.emit_model_stream(chunk)
+                # 流结束后获取完整的 tool_calls
+                tool_calls = response.tool_calls or []
+                # 流结束后才发射 MODEL_STOP
+                self.events.emit(EventType.MODEL_STOP, {"iteration": iterations, "session_id": session_id})
             else:
                 content = response.content
-
-            tool_calls = response.tool_calls or []
+                tool_calls = response.tool_calls or []
+                # 非流式响应在 chat() 返回后发射 MODEL_STOP
+                self.events.emit(EventType.MODEL_STOP, {"iteration": iterations, "session_id": session_id})
 
             messages.append({"role": "assistant", "content": content})
+            if tool_calls:
+                # 转换 tool_calls 为 dict 格式以便 JSON 序列化
+                messages[-1]["tool_calls"] = [
+                    {
+                        "id": tc.id if hasattr(tc, 'id') else tc.get("id", ""),
+                        "type": tc.type if hasattr(tc, 'type') else tc.get("type", ""),
+                        "function": {
+                            "name": tc.function.get("name", "") if hasattr(tc.function, 'get') else (tc.function.name if hasattr(tc.function, 'name') else ""),
+                            "arguments": tc.function.get("arguments", "") if hasattr(tc.function, 'get') else (tc.function.arguments if hasattr(tc.function, 'arguments') else "")
+                        }
+                    }
+                    for tc in tool_calls
+                ]
             result["content"] = content
 
             # 处理工具调用（包括子Agent调用）
