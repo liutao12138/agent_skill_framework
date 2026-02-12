@@ -9,7 +9,7 @@ from .model_client import ModelClient, ModelResponse, create_client, OpenAIClien
 from .tools import ToolRegistry, get_tool_registry, execute_tool, get_tool_definitions, BaseTool
 from .skill_loader import SkillLoader, get_skills_loader, scan_skills, Skill, SkillStatus
 from .sub_agent import SubAgent, SubAgentManager, SubAgentConfig
-from .events import EventEmitter, EventType, Event, get_event_emitter, emit_event, ConsoleEventHandler
+from .events import EventEmitter, EventType, Event, ConsoleEventHandler
 from .agent import Agent, create_agent, run_chat
 
 __all__ = [
@@ -19,6 +19,6 @@ __all__ = [
     "ToolRegistry", "get_tool_registry", "execute_tool", "get_tool_definitions", "BaseTool",
     "SkillLoader", "get_skills_loader", "scan_skills", "Skill", "SkillStatus",
     "SubAgent", "SubAgentManager", "SubAgentConfig",
-    "EventEmitter", "EventType", "Event", "get_event_emitter", "emit_event", "ConsoleEventHandler",
+    "EventEmitter", "EventType", "Event", "ConsoleEventHandler",
     "Agent", "create_agent", "run_chat",
 ]

@@ -143,7 +143,14 @@ class BaseModelClient:
                     content = msg.get("content", "")
                     if len(content) > 200:
                         msg["content"] = content[:200] + "..."
-        logger.debug(f"[MODEL] Request body: {json.dumps(log_body, ensure_ascii=False)}")
+
+        def json_serializer(obj):
+            """处理无法 JSON 序列化的对象"""
+            if hasattr(obj, '__dict__'):
+                return obj.__dict__
+            return str(obj)
+
+        logger.debug(f"[MODEL] Request body: {json.dumps(log_body, ensure_ascii=False, default=json_serializer)}")
 
     async def _make_request(self, body: Dict, stream: bool) -> httpx.Response:
         url = f"{self.base_url}/chat/completions"

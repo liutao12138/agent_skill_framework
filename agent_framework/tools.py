@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Agent Framework Tools - 工具系统"""
 
+import asyncio
+import inspect
 import os
 import re
 import subprocess
+import threading
+import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Awaitable
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -49,8 +53,21 @@ class BaseTool(ABC):
         self._definition: Optional[ToolDefinition] = None
 
     @abstractmethod
-    def execute(self, **kwargs) -> str:
+    def execute(self, **kwargs) -> Union[str, Awaitable[str]]:
+        """执行工具
+
+        Args:
+            **kwargs: 工具参数
+
+        Returns:
+            str: 同步执行结果
+            Awaitable[str]: 异步执行结果（协程）
+        """
         pass
+
+    def _is_async(self) -> bool:
+        """检查execute方法是否为异步方法"""
+        return inspect.iscoroutinefunction(self.execute)
 
     def get_definition(self) -> ToolDefinition:
         return self._definition or ToolDefinition(name=self.name, description=self.description)
@@ -272,15 +289,153 @@ class GrepTool(WorkspaceTool):
             return f"Error during search: {e}"
 
 
+# ============ Memory 工具（用于持久化存储工具结果）============
+
+
+class MemoryStore:
+    """内存存储，用于工具结果持久化"""
+
+    def __init__(self):
+        self._data: Dict[str, str] = {}
+        self._metadata: Dict[str, Dict[str, Any]] = {}
+
+    def set(self, key: str, value: str, metadata: Dict[str, Any] = None) -> bool:
+        """存储值"""
+        self._data[key] = value
+        self._metadata[key] = metadata or {}
+        self._metadata[key]["timestamp"] = time.time()
+        return True
+
+    def get(self, key: str) -> Optional[str]:
+        """获取值"""
+        return self._data.get(key)
+
+    def delete(self, key: str) -> bool:
+        """删除值"""
+        if key in self._data:
+            del self._data[key]
+            if key in self._metadata:
+                del self._metadata[key]
+            return True
+        return False
+
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """搜索存储的内容"""
+        results = []
+        query_lower = query.lower()
+        for key, value in self._data.items():
+            if query_lower in key.lower() or query_lower in value.lower():
+                meta = self._metadata.get(key, {})
+                results.append({
+                    "key": key,
+                    "value": value,
+                    "timestamp": meta.get("timestamp", 0)
+                })
+                if len(results) >= limit:
+                    break
+        return results
+
+    def list_keys(self, limit: int = 100) -> List[str]:
+        """列出所有键"""
+        return list(self._data.keys())[:limit]
+
+    def clear(self):
+        """清空存储"""
+        self._data.clear()
+        self._metadata.clear()
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+
+# 全局内存存储实例
+_memory_store: Optional[MemoryStore] = None
+
+
+def get_memory_store() -> MemoryStore:
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = MemoryStore()
+    return _memory_store
+
+
+def reset_memory_store():
+    """重置内存存储（用于测试）"""
+    global _memory_store
+    _memory_store = None
+
+
+class MemoryTool(WorkspaceTool):
+    """持久化存储工具，用于保存和检索工具结果"""
+
+    def __init__(self, workspace_path: str = "./workspace"):
+        super().__init__("memory", "Persistently store and retrieve tool results", workspace_path)
+        self._definition = ToolDefinition(
+            name=self.name, description=self.description, category=ToolCategory.SYSTEM,
+            parameters=[
+                ToolParameter("action", "string", "Action: get, set, search, delete, list, clear", required=True, enum=["get", "set", "search", "delete", "list", "clear"]),
+                ToolParameter("key", "string", "Key for the stored value"),
+                ToolParameter("value", "string", "Value to store (for set action)"),
+                ToolParameter("query", "string", "Search query (for search action)"),
+                ToolParameter("limit", "integer", "Limit results (default: 10)", default=10),
+            ],
+            returns="Stored/retrieved/searched results", timeout=10)
+
+    def execute(self, action: str, key: str = None, value: str = None, query: str = None, limit: int = 10, **kwargs) -> str:
+        # 优先使用Agent传递的memory_store，否则降级到全局存储
+        store = kwargs.get("_memory_store") or get_memory_store()
+
+        if action == "set":
+            if not key:
+                return "Error: key is required for set action"
+            store.set(key, value or "")
+            return f"Success: Stored '{key}'"
+
+        elif action == "get":
+            if not key:
+                return "Error: key is required for get action"
+            result = store.get(key)
+            if result is None:
+                return f"Not found: {key}"
+            return result
+
+        elif action == "search":
+            results = store.search(query or "", limit=limit)
+            if not results:
+                return f"No results found for: {query}"
+            lines = [f"[{r['key']}] (ts: {r['timestamp']:.0f}):\n{r['value'][:500]}" for r in results]
+            return "\n---\n".join(lines)
+
+        elif action == "delete":
+            if not key:
+                return "Error: key is required for delete action"
+            if store.delete(key):
+                return f"Deleted: {key}"
+            return f"Not found: {key}"
+
+        elif action == "list":
+            keys = store.list_keys(limit=limit)
+            if not keys:
+                return "(empty storage)"
+            return "\n".join(f"- {k}" for k in keys)
+
+        elif action == "clear":
+            store.clear()
+            return "Storage cleared"
+
+        else:
+            return f"Error: Unknown action: {action}"
+
+
 class ToolRegistry:
     def __init__(self, workspace_path: str = "./workspace"):
         self._tools: Dict[str, BaseTool] = {}
         self._workspace_path = workspace_path
-        self._lock = __import__('threading').Lock()
+        self._lock = threading.Lock()
         self._register_defaults()
 
     def _register_defaults(self):
-        defaults = [FileReadTool, FileWriteTool, FileEditTool, BashTool, ListDirTool, GrepTool]
+        defaults = [FileReadTool, FileWriteTool, FileEditTool, BashTool, ListDirTool, GrepTool, MemoryTool]
         for ToolClass in defaults:
             self.register(ToolClass(self._workspace_path))
 
@@ -306,6 +461,7 @@ class ToolRegistry:
         return {"type": "function", "function": {"name": d.name, "description": d.description, "parameters": {"type": "object", "properties": props, "required": required}}}
 
     def execute(self, name: str, **kwargs) -> str:
+        """同步执行工具（保持向后兼容）"""
         tool = self.get(name)
         if tool is None:
             get_logger().error(f"[TOOL] Unknown tool: {name}")
@@ -313,11 +469,68 @@ class ToolRegistry:
         definition = tool.get_definition()
         timeout = kwargs.pop("timeout", definition.timeout)
         get_logger().info(f"[TOOL] Executing: {name}, args={list(kwargs.keys())}")
+
+        def _execute():
+            if tool._is_async():
+                # 异步方法需要在新事件循环中执行
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(tool.execute(**kwargs))
+                finally:
+                    new_loop.close()
+            else:
+                return tool.execute(**kwargs)
+
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                result = executor.submit(tool.execute, **kwargs).result(timeout=timeout)
-            get_logger().debug(f"[TOOL] Result: {result[:200]}..." if len(result) > 200 else f"[TOOL] Result: {result}")
-            return result
+                result = executor.submit(_execute).result(timeout=timeout)
+            # 截断过长的结果
+            truncated = truncate_tool_result(result)
+            get_logger().debug(f"[TOOL] Result: {truncated[:200]}..." if len(truncated) > 200 else f"[TOOL] Result: {truncated}")
+            return truncated
+        except TimeoutError:
+            get_logger().error(f"[TOOL] Timeout: {name} exceeded {timeout}s")
+            return f"Error: Tool timed out after {timeout}s"
+        except Exception as e:
+            get_logger().error(f"[TOOL] Error: {name} failed: {e}\n{traceback.format_exc()}")
+            return f"Error: Tool execution failed: {e}"
+
+    async def execute_async(self, name: str, **kwargs) -> str:
+        """异步执行工具
+
+        Args:
+            name: 工具名称
+            **kwargs: 工具参数
+
+        Returns:
+            str: 工具执行结果
+        """
+        tool = self.get(name)
+        if tool is None:
+            get_logger().error(f"[TOOL] Unknown tool: {name}")
+            return f"Error: Unknown tool: {name}"
+
+        definition = tool.get_definition()
+        timeout = kwargs.pop("timeout", definition.timeout)
+        get_logger().info(f"[TOOL] Async executing: {name}, args={list(kwargs.keys())}")
+
+        try:
+            if tool._is_async():
+                # 异步方法直接await
+                result = await asyncio.wait_for(tool.execute(**kwargs), timeout=timeout)
+            else:
+                # 同步方法在线程池中执行
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(executor, tool.execute, kwargs),
+                        timeout=timeout
+                    )
+            # 截断过长的结果
+            truncated = truncate_tool_result(result)
+            get_logger().debug(f"[TOOL] Result: {truncated[:200]}..." if len(truncated) > 200 else f"[TOOL] Result: {truncated}")
+            return truncated
         except TimeoutError:
             get_logger().error(f"[TOOL] Timeout: {name} exceeded {timeout}s")
             return f"Error: Tool timed out after {timeout}s"
@@ -343,6 +556,82 @@ def get_tool_registry() -> ToolRegistry:
 def execute_tool(name: str, **kwargs) -> str:
     get_logger().info(f"[TOOL] Direct call: {name}, kwargs={kwargs}")
     return get_tool_registry().execute(name, **kwargs)
+
+
+async def execute_tool_async(name: str, **kwargs) -> str:
+    """异步执行工具
+
+    Args:
+        name: 工具名称
+        **kwargs: 工具参数
+
+    Returns:
+        str: 工具执行结果
+    """
+    get_logger().info(f"[TOOL] Direct async call: {name}, kwargs={kwargs}")
+    return await get_tool_registry().execute_async(name, **kwargs)
+
+
+# ============ 工具结果截断配置 ============
+
+# 硬上限字符数
+TOOL_RESULT_HARD_LIMIT = 10 * 1024  # 10K 字符
+
+# 默认保留头部和尾部的比例（各50%）
+TOOL_RESULT_HEAD_RATIO = 0.5
+TOOL_RESULT_TAIL_RATIO = 0.5
+
+
+def truncate_tool_result(result: str, context_window: int = None, head_ratio: float = TOOL_RESULT_HEAD_RATIO,
+                         tail_ratio: float = TOOL_RESULT_TAIL_RATIO, hard_limit: int = TOOL_RESULT_HARD_LIMIT) -> str:
+    """截断工具结果
+
+    当结果超过上下文窗口的30%或硬上限(10K字符)时，截断为头部+尾部+标记
+
+    Args:
+        result: 原始结果
+        context_window: 上下文窗口大小（token数），默认根据硬上限估算（约2500 tokens）
+        head_ratio: 头部保留比例
+        tail_ratio: 尾部保留比例
+        hard_limit: 硬上限字符数
+
+    Returns:
+        str: 截断后的结果
+    """
+    if not result:
+        return result
+
+    # 估算上下文窗口的30%
+    if context_window is None:
+        # 默认假设1 token ≈ 4字符，30%上下文窗口约等于硬上限
+        context_limit = hard_limit
+    else:
+        context_limit = int(context_window * 0.3)
+
+    # 取硬上限和上下文限制的较小值
+    max_length = min(hard_limit, context_limit)
+
+    if len(result) <= max_length:
+        return result
+
+    # 计算头部和尾部分配
+    head_length = int(max_length * head_ratio)
+    tail_length = int(max_length * tail_ratio)
+
+    # 确保有足够空间放置标记
+    marker = f"\n[... 内容被截断 ({len(result)} 字符) ...]\n"
+    marker_length = len(marker)
+
+    if head_length + tail_length + marker_length > max_length:
+        # 调整头部和尾部大小
+        available = max_length - marker_length
+        head_length = int(available * head_ratio)
+        tail_length = available - head_length
+
+    head = result[:head_length]
+    tail = result[-tail_length:] if tail_length > 0 else ""
+
+    return head + marker + tail
 
 
 def get_tool_definitions(allowed_tools: List[str] = None) -> List[Dict[str, Any]]:

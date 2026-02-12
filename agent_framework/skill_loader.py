@@ -3,6 +3,7 @@
 
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,7 +51,7 @@ class SkillLoader:
     def __init__(self, skills_dir: str = "./skills"):
         self.skills_dir = Path(skills_dir)
         self.skills: Dict[str, Skill] = {}
-        self._lock = __import__('threading').Lock()
+        self._lock = threading.Lock()
 
     def scan(self) -> List[str]:
         """扫描 skills 目录"""

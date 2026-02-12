@@ -3,13 +3,12 @@
 Agent Framework Events - 事件通知系统
 """
 
-import json
 import threading
 import time
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-from queue import Queue, Empty
+from queue import Queue
 from datetime import datetime
 
 
@@ -100,7 +99,6 @@ class EventEmitter:
 
     def __init__(self, max_queue_size: int = 1000):
         self._handlers: List[Callable] = []
-        self._callbacks: List[Callable] = []
         self._lock = threading.Lock()
         self._session_id: Optional[str] = None
         self._queue: Queue = Queue(max_queue_size)
@@ -136,10 +134,6 @@ class EventEmitter:
                 return True
             return False
 
-    def add_callback(self, callback: Callable, event_types: List[EventType] = None):
-        with self._lock:
-            self._callbacks.append((callback, event_types or []))
-
     # 便捷方法
     def emit_model_stream(self, chunk: str, incremental: bool = True):
         """发射流式 token 事件"""
@@ -165,18 +159,3 @@ class EventEmitter:
 
     def emit_error(self, error: str):
         self.emit(EventType.ERROR, {"error": error})
-
-
-_event_emitter: Optional[EventEmitter] = None
-
-
-def get_event_emitter() -> EventEmitter:
-    global _event_emitter
-    if _event_emitter is None:
-        _event_emitter = EventEmitter(1000)
-        _event_emitter.add_handler(ConsoleEventHandler())
-    return _event_emitter
-
-
-def emit_event(event_type: EventType, data: Dict[str, Any] = None) -> bool:
-    return get_event_emitter().emit(event_type, data)
