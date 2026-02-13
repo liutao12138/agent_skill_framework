@@ -82,18 +82,6 @@ config.model.model = "gpt-4"
 agent = Agent(config=config)
 ```
 
-### 3. 运行 REPL
-
-```bash
-python -m agent_framework
-```
-
-或使用配置文件:
-
-```bash
-python -m agent_framework --config config.yaml
-```
-
 ## 配置文件
 
 支持 YAML 和 JSON 格式:
@@ -298,7 +286,6 @@ registry = ToolRegistry(workspace_path="/custom/path")
 ```
 agent_framework/
 ├── __init__.py           # 主入口
-├── __main__.py           # CLI入口
 ├── config.py             # 配置管理
 ├── logger.py             # 日志系统
 ├── model_client.py       # 模型客户端

@@ -122,7 +122,7 @@ class BaseAgent:
             async for chunk in response:
                 content += chunk
                 if hasattr(self, 'events'):
-                    self.events.emit_model_stream(chunk)
+                    self.events.emit(EventType.MODEL_STREAM, {"chunk": chunk, "incremental": True})
             tool_calls = response.tool_calls or []
             if emit_stop_event and hasattr(self, 'events'):
                 self.events.emit(EventType.MODEL_STOP, {"iteration": None, "session_id": None})
@@ -186,42 +186,69 @@ class BaseAgent:
         return None
 
     def _resolve_placeholders(self, args: Dict[str, Any], memory_store=None) -> Dict[str, Any]:
-        """解析参数中的占位符"""
-        resolved = {}
+        """解析参数中的占位符
 
-        for key, value in args.items():
-            if not isinstance(value, str):
-                resolved[key] = value
-                continue
+        Args:
+            args: 参数字典
+            memory_store: 内存存储对象
 
-            # 1. ${tool_result.N}
-            tool_match = re.search(r'\$\{tool_result\.(\d+)\}', value)
-            if tool_match:
-                index = int(tool_match.group(1))
-                if 0 <= index < len(self._tool_results):
-                    value = value.replace(tool_match.group(0), self._tool_results[index].get("output", ""))
+        Returns:
+            解析后的参数字典
+        """
+        return self._resolve_value(args, memory_store)
 
-            # 2. ${tool_result.last}
-            if "${tool_result.last}" in value and self._tool_results:
-                value = value.replace("${tool_result.last}", self._tool_results[-1].get("output", ""))
+    def _resolve_value(self, value: Any, memory_store=None) -> Any:
+        """递归解析值中的占位符
 
-            # 3. ${memory.KEY}
-            if memory_store:
-                memory_match = re.search(r'\$\{memory\.([^}]+)\}', value)
-                if memory_match:
-                    mem_key = memory_match.group(1)
-                    mem_value = memory_store.get(mem_key)
-                    if mem_value is not None:
-                        value = value.replace(memory_match.group(0), mem_value)
+        Args:
+            value: 要解析的值（可以是 str, list, dict, 其他）
 
-            # 4. ${natural.QUERY}
-            natural_match = re.search(r'\$\{natural\.([^}]+)\}', value)
-            if natural_match:
-                query = natural_match.group(1)
-                resolved_value = self._find_tool_result_by_description(query)
-                if resolved_value is not None:
-                    value = value.replace(natural_match.group(0), resolved_value)
+        Returns:
+            解析后的值
+        """
+        # 处理字符串
+        if isinstance(value, str):
+            return self._resolve_string(value, memory_store)
 
-            resolved[key] = value
+        # 处理列表
+        if isinstance(value, list):
+            return [self._resolve_value(item, memory_store) for item in value]
 
-        return resolved
+        # 处理字典
+        if isinstance(value, dict):
+            return {k: self._resolve_value(v, memory_store) for k, v in value.items()}
+
+        # 其他类型直接返回
+        return value
+
+    def _resolve_string(self, value: str, memory_store=None) -> str:
+        """解析字符串中的占位符"""
+        # 1. ${tool_result.N}
+        tool_match = re.search(r'\$\{tool_result\.(\d+)\}', value)
+        if tool_match:
+            index = int(tool_match.group(1))
+            if 0 <= index < len(self._tool_results):
+                value = value.replace(tool_match.group(0), self._tool_results[index].get("output", ""))
+
+        # 2. ${tool_result.last}
+        if "${tool_result.last}" in value and self._tool_results:
+            value = value.replace("${tool_result.last}", self._tool_results[-1].get("output", ""))
+
+        # 3. ${memory.KEY}
+        if memory_store:
+            memory_match = re.search(r'\$\{memory\.([^}]+)\}', value)
+            if memory_match:
+                mem_key = memory_match.group(1)
+                mem_value = memory_store.get(mem_key)
+                if mem_value is not None:
+                    value = value.replace(memory_match.group(0), mem_value)
+
+        # 4. ${natural.QUERY}
+        natural_match = re.search(r'\$\{natural\.([^}]+)\}', value)
+        if natural_match:
+            query = natural_match.group(1)
+            resolved_value = self._find_tool_result_by_description(query)
+            if resolved_value is not None:
+                value = value.replace(natural_match.group(0), resolved_value)
+
+        return value

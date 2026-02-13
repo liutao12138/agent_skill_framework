@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from .base import BaseAgent
 from .model_client import ModelClient, StopReason
 from .tools import ToolRegistry, get_tool_registry, execute_tool
-from .events import EventEmitter, EventType, get_event_emitter
+from .events import EventEmitter, EventType
 
 
 @dataclass
@@ -35,7 +35,7 @@ class SubAgent(BaseAgent):
         self.config = config
         self.model_client = model_client
         self.tool_registry = tool_registry or get_tool_registry()
-        self.events = parent_events or get_event_emitter()
+        self.events = parent_events or EventEmitter()
         self.workspace_path = Path(workspace_path)
         self.messages: List[Dict[str, Any]] = []
         self.stats = {"iterations": 0, "tool_calls": 0, "start_time": None, "end_time": None}
@@ -216,7 +216,7 @@ class SubAgentManager:
     def __init__(self, model_client: ModelClient, tool_registry: ToolRegistry = None, events: EventEmitter = None, workspace_path: str = "./workspace"):
         self.model_client = model_client
         self.tool_registry = tool_registry or get_tool_registry()
-        self.events = events or get_event_emitter()
+        self.events = events or EventEmitter()
         self.workspace_path = workspace_path
         self._configs: Dict[str, SubAgentConfig] = {}
 

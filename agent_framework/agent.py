@@ -7,12 +7,12 @@ from typing import Any, Dict, List
 
 from .base import BaseAgent
 from .config import get_config, create_config, FrameworkConfig
-from .events import EventEmitter, EventType, get_event_emitter
+from .events import EventEmitter, EventType
 from .logger import get_logger
 from .model_client import ModelClient, create_client
 from .skill_loader import SkillLoader, get_skills_loader
 from .sub_agent import SubAgentManager
-from .tools import execute_tool, get_tool_definitions, get_tool_registry, MemoryStore
+from .tools import execute_tool, get_tool_definitions, get_tool_registry, MemoryStore, FinalAnswerException
 
 logger = get_logger()
 
@@ -31,7 +31,7 @@ class Agent(BaseAgent):
         super().__init__(self.config.workspace.root_path)
         self.model_client = model_client or create_client()
         self.tool_registry = tool_registry or get_tool_registry()
-        self.events = events or get_event_emitter()
+        self.events = events or EventEmitter()
         self.allowed_tools = allowed_tools
         self.skills_loader = skills_loader or get_skills_loader(self.workspace_path)
         self.subagent_manager = SubAgentManager(
@@ -113,7 +113,10 @@ class Agent(BaseAgent):
             result["content"] = content
 
             if tool_calls:
-                await self._process_tool_calls(tool_calls, messages, result, start_time, session_id, max_timeout)
+                has_final_answer = await self._process_tool_calls(tool_calls, messages, result, start_time, session_id, max_timeout)
+                if has_final_answer:
+                    # 工具返回了最终答案，终止 agent
+                    break
                 continue
 
             if self._should_stop(response, stream, tool_calls):
@@ -129,8 +132,12 @@ class Agent(BaseAgent):
         return result
 
     async def _process_tool_calls(self, tool_calls: List, messages: List[Dict], result: Dict,
-                                   start_time: float, session_id: str, max_timeout: float):
-        """处理工具调用（包括子Agent和普通工具）"""
+                                   start_time: float, session_id: str, max_timeout: float) -> bool:
+        """处理工具调用（包括子Agent和普通工具）
+
+        Returns:
+            bool: 如果有最终答案（FinalAnswerException），返回 True；否则返回 False
+        """
         parsed_calls = [self._parse_tool_call(tc) for tc in tool_calls]
 
         subagent_calls = [tc for tc in parsed_calls if self._is_subagent_call(tc)]
@@ -156,9 +163,18 @@ class Agent(BaseAgent):
                 {"role": "tool", "content": r["output"], "tool_call_id": r["tool_use_id"]}
                 for r in tool_results
             ])
+            # 检查是否有最终答案
+            for r in tool_results:
+                if "final_answer" in r:
+                    result["success"] = True
+                    result["content"] = r["final_answer"]
+                    result["final_answer"] = True
+                    return True
 
         if time.time() - start_time > max_timeout:
-            return
+            return False
+
+        return False
 
     async def _execute_subagent(self, tool_call: Dict, session_id: str) -> Dict[str, Any]:
         """执行子Agent调用"""
@@ -185,8 +201,14 @@ class Agent(BaseAgent):
         return {"tool_use_id": tool_call["id"], "subagent_name": subagent_name, "result": result}
 
     async def _execute_tools(self, tool_calls: List[Dict], session_id: str) -> List[Dict[str, Any]]:
-        """执行工具调用"""
+        """执行工具调用
+
+        Returns:
+            List[Dict[str, Any]]: 工具执行结果列表，如果某个工具抛出 FinalAnswerException，
+            会在该结果的 'final_answer' 字段中携带答案
+        """
         results = []
+        final_answer = None  # 存储最终答案
 
         for tool_call in tool_calls:
             args = self._parse_tool_args(tool_call["arguments"])
@@ -195,12 +217,18 @@ class Agent(BaseAgent):
 
             tool_name = tool_call["name"]
             logger.info(f"[TOOL] Calling: {tool_name}, session_id={session_id}")
-            self.events.emit(EventType.TOOL_CALL_START, {"tool_name": tool_name, "input": resolved_args, "session_id": session_id})
+            self.events.emit(EventType.TOOL_CALL_START, {"tool_name": tool_name, "input": resolved_args, "session_id": session_id, "call_id": tool_call.get("id")})
 
             start_time = time.time()
             try:
                 output = execute_tool(tool_name, **resolved_args)
                 success = not output.startswith("Error:")
+            except FinalAnswerException as e:
+                # 捕获 FinalAnswerException，记录最终答案并继续执行
+                final_answer = e.message
+                output = str(e.message)
+                success = True
+                logger.info(f"[TOOL] FinalAnswerException caught from {tool_name}: {output}")
             except Exception as e:
                 output, success = f"Error: {e}", False
 
@@ -208,7 +236,7 @@ class Agent(BaseAgent):
             logger.info(f"[TOOL] Done: {tool_name}, success={success}, duration={duration:.2f}s, session_id={session_id}")
             self.events.emit(EventType.TOOL_RESULT, {
                 "tool_name": tool_name, "output": output, "success": success,
-                "duration": duration, "session_id": session_id
+                "duration": duration, "session_id": session_id, "call_id": tool_call.get("id")
             })
 
             result_record = {
@@ -219,6 +247,10 @@ class Agent(BaseAgent):
                 "duration": duration,
                 "session_id": session_id
             }
+            # 如果有最终答案，添加到结果中
+            if final_answer is not None:
+                result_record["final_answer"] = final_answer
+
             self._tool_results.append(result_record)
             results.append(result_record)
 

@@ -8,7 +8,7 @@ import asyncio
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent_framework import create_agent, setup_logging
-from agent_framework.events import EventType, ConsoleEventHandler, Event
+from agent_framework.events import EventType, Event
 
 setup_logging("DEBUG")
 
@@ -20,9 +20,10 @@ class StreamingTokenPrinter:
         self.enabled = True
 
     def handle(self, event: Event):
-        if event.type == EventType.MODEL_STREAM:
+        if event.type == EventType.MODEL_STREAM.value:
             chunk = event.data.get('chunk', '')
             # 默认console事件有，这里不打印，仅示例
+            print(chunk, end="", flush=True)
 
 
 async def main():
@@ -31,7 +32,7 @@ async def main():
 
     # 添加流式 Token 监听器
     token_printer = StreamingTokenPrinter()
-    agent.events.add_handler(token_printer)
+    agent.events.on(token_printer.handle)
 
     user_msg = "请写一个react的应用初始化勾子函数代码"
 

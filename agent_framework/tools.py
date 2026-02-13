@@ -25,6 +25,20 @@ class ToolCategory(Enum):
     SEARCH = "search"
 
 
+class FinalAnswerException(Exception):
+    """最终答案异常 - 工具可以通过抛出此异常来终止 Agent 交互并返回最终答案
+
+    使用方式:
+        raise FinalAnswerException("这里是最终答案")
+        # 或者携带更多上下文
+        raise FinalAnswerException({"answer": "答案", "reason": "解释"})
+    """
+
+    def __init__(self, message: Any):
+        self.message = message
+        super().__init__(str(message))
+
+
 @dataclass
 class ToolParameter:
     name: str
@@ -485,13 +499,18 @@ class ToolRegistry:
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 result = executor.submit(_execute).result(timeout=timeout)
-            # 截断过长的结果
+            # 截断过长的结果（但FinalAnswerException不截断）
+            if isinstance(result, FinalAnswerException):
+                raise result
             truncated = truncate_tool_result(result)
             get_logger().debug(f"[TOOL] Result: {truncated[:200]}..." if len(truncated) > 200 else f"[TOOL] Result: {truncated}")
             return truncated
         except TimeoutError:
             get_logger().error(f"[TOOL] Timeout: {name} exceeded {timeout}s")
             return f"Error: Tool timed out after {timeout}s"
+        except FinalAnswerException:
+            # 重新抛出 FinalAnswerException，让上层处理
+            raise
         except Exception as e:
             get_logger().error(f"[TOOL] Error: {name} failed: {e}\n{traceback.format_exc()}")
             return f"Error: Tool execution failed: {e}"
@@ -527,13 +546,18 @@ class ToolRegistry:
                         loop.run_in_executor(executor, tool.execute, kwargs),
                         timeout=timeout
                     )
-            # 截断过长的结果
+            # 截断过长的结果（但FinalAnswerException不截断）
+            if isinstance(result, FinalAnswerException):
+                raise result
             truncated = truncate_tool_result(result)
             get_logger().debug(f"[TOOL] Result: {truncated[:200]}..." if len(truncated) > 200 else f"[TOOL] Result: {truncated}")
             return truncated
         except TimeoutError:
             get_logger().error(f"[TOOL] Timeout: {name} exceeded {timeout}s")
             return f"Error: Tool timed out after {timeout}s"
+        except FinalAnswerException:
+            # 重新抛出 FinalAnswerException，让上层处理
+            raise
         except Exception as e:
             get_logger().error(f"[TOOL] Error: {name} failed: {e}\n{traceback.format_exc()}")
             return f"Error: Tool execution failed: {e}"
