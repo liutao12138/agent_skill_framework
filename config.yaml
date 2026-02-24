@@ -4,7 +4,7 @@
 model:
   provider: "openai"
   base_url: "https://open.bigmodel.cn/api/paas/v4"
-  api_key: "de31f55936c44e4eb043202756316d86.waTCH7N3TnWtcHdo"
+  api_key: ""
   model: "glm-4.7-flash"
   max_tokens: 4096
   temperature: 0.7
