@@ -3,7 +3,6 @@
 
 import asyncio
 import inspect
-import os
 import re
 import subprocess
 import threading
@@ -577,25 +576,6 @@ def get_tool_registry() -> ToolRegistry:
     return _tool_registry
 
 
-def execute_tool(name: str, **kwargs) -> str:
-    get_logger().info(f"[TOOL] Direct call: {name}, kwargs={kwargs}")
-    return get_tool_registry().execute(name, **kwargs)
-
-
-async def execute_tool_async(name: str, **kwargs) -> str:
-    """异步执行工具
-
-    Args:
-        name: 工具名称
-        **kwargs: 工具参数
-
-    Returns:
-        str: 工具执行结果
-    """
-    get_logger().info(f"[TOOL] Direct async call: {name}, kwargs={kwargs}")
-    return await get_tool_registry().execute_async(name, **kwargs)
-
-
 # ============ 工具结果截断配置 ============
 
 # 硬上限字符数
@@ -659,16 +639,7 @@ def truncate_tool_result(result: str, context_window: int = None, head_ratio: fl
 
 
 def get_tool_definitions(allowed_tools: List[str] = None) -> List[Dict[str, Any]]:
-    """获取工具定义列表
-
-    Args:
-        allowed_tools: 可用工具名称列表，如果为 None 则返回所有工具
-    """
+    """获取工具定义列表"""
     registry = get_tool_registry()
-    all_tools = registry.get_definitions_as_dicts()
-
-    if allowed_tools is None:
-        return all_tools
-
-    # 过滤工具
-    return [tool for tool in all_tools if tool.get("function", {}).get("name") in allowed_tools]
+    tools = registry.get_definitions_as_dicts()
+    return [t for t in tools if t.get("function", {}).get("name") in allowed_tools] if allowed_tools else tools

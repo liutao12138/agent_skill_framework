@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Agent Framework Skills Loader - Skills 加载模块"""
 
-import os
 import re
 import threading
 import time

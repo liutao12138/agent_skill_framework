@@ -24,6 +24,10 @@ class ModelConfig:
     # 会话管理
     max_messages: int = 50  # 最大消息数量，超过则滑动窗口
     rate_limit_delay: float = 0.5  # 请求间最小延迟(秒)
+    # 深度思考配置
+    enable_thinking: bool = False  # 是否启用深度思考
+    thinking_level: str = "medium"  # 思考级别: low/medium/high
+    thinking_max_tokens: int = 8192  # 思考最大 token 数
 
 
 @dataclass

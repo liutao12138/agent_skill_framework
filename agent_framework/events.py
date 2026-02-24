@@ -5,12 +5,9 @@ Agent Framework Events - 事件通知系统
 
 import threading
 import time
-import json
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-from queue import Queue
-from datetime import datetime
 
 
 class EventType(Enum):
@@ -55,11 +52,10 @@ class Event:
 class EventEmitter:
     """事件发射器"""
 
-    def __init__(self, max_queue_size: int = 1000):
+    def __init__(self):
         self._handlers: List[Callable] = []
         self._lock = threading.Lock()
         self._session_id: Optional[str] = None
-        self._queue: Queue = Queue(max_queue_size)
 
     def set_session_id(self, session_id: str):
         self._session_id = session_id
@@ -104,10 +100,6 @@ class EventEmitter:
         type_value = event_type.value if hasattr(event_type, 'value') else event_type
         event = Event(type=type_value, data=data or {}, source=source, session_id=self._session_id, call_id=call_id)
         with self._lock:
-            try:
-                self._queue.put_nowait(event)
-            except:
-                pass
             self._dispatch(event)
         return True
 

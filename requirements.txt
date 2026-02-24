@@ -3,3 +3,8 @@
 PyYAML>=5.4.0
 httpx>=0.25.0
 pytest>=7.0.0
+langchain==1.2.10
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.2.0
+langchain-agents>=0.3.0

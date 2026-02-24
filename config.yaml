@@ -4,7 +4,7 @@
 model:
   provider: "openai"
   base_url: "https://open.bigmodel.cn/api/paas/v4"
-  api_key: "your-api-key"
+  api_key: "de31f55936c44e4eb043202756316d86.waTCH7N3TnWtcHdo"
   model: "glm-4.7-flash"
   max_tokens: 4096
   temperature: 0.7
@@ -13,6 +13,10 @@ model:
   timeout: 60
   retry_times: 3
   retry_delay: 1.0
+  # 深度思考配置 (适用于支持思考的模型如 GLM-4-Plus, OpenAI o1, Claude 3.5+)
+  enable_thinking: false
+  thinking_level: "medium"  # low/medium/high
+  thinking_max_tokens: 8192
 
 # 工作空间配置
 workspace:
