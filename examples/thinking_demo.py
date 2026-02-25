@@ -7,16 +7,18 @@
 import sys
 import os
 import asyncio
+import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent_framework import create_agent, create_config, setup_logging
+from agent_framework import create_agent, create_config
+
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 
 async def main():
     """深度思考示例"""
-    setup_logging("INFO")
-
     # 创建配置，启用深度思考
     config = create_config()
 

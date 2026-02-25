@@ -7,16 +7,18 @@
 import sys
 import os
 import asyncio
+import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent_framework import create_agent, DEFAULT_CAPABILITIES, setup_logging
+from agent_framework import create_agent, DEFAULT_CAPABILITIES
+
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 
 
 async def main():
     """自定义提示词示例"""
-    setup_logging("INFO")
-
     print("\n=== 示例 1: 自定义能力章节 ===")
 
     # 自定义能力章节
